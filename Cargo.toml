@@ -1,0 +1,21 @@
+[package]
+name = "tsa"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+tokio = { version = "1", features = ["full"] }
+nitscrape = {path = "../nitscrape"}
+clap = { version = "4.3.8", features = ["derive"] }
+rust-bert = "0.21.0"
+csv = "1.2.2"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0.103"
+chrono = { version = "0.4.26", features = ["serde"] }
+plotters = "0.3.5"
+tokio-util = "0.7.8"
+tokio-io = "0.1.13"
+tokio-metrics = "0.2.2"
+reqwest = { version = "0.11.18", features = ["socks"] }
