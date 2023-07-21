@@ -1,0 +1,7 @@
+# This file is made for tsa tor scraping.
+
+ClientOnionAuthDir C:\Program Files\Tor Browser\Browser\TorBrowser\Data\Tor\onion-auth
+GeoIPFile C:\Program Files\Tor Browser\Browser\TorBrowser\Data\Tor\geoip
+GeoIPv6File C:\Program Files\Tor Browser\Browser\TorBrowser\Data\Tor\geoip6
+
+# -- Per instance settings -- #
