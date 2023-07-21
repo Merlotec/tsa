@@ -15,7 +15,7 @@ pub struct Resume {
     output_path: String,
 }
 
-#[derive(Default, serde::Serialize, serde::Deserialize)]
+#[derive(serde::Serialize, serde::Deserialize)]
 pub struct Settings {
     pub input_path: String, 
     pub layout: CsvLayout, 
@@ -24,6 +24,22 @@ pub struct Settings {
     pub base_config: String, 
     pub num_kernels: u32, 
     pub sample_skip: usize,
+    pub kernel_settings: TorKernelSettings,
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Self {
+            input_path: "data/skel.csv".to_owned(),
+            layout: CsvLayout::default(),
+            output_path: "data/hydr.csv".to_owned(),
+            tor_path: "/usr/bin/tor".to_owned(),
+            base_config: "/torrc_base".to_owned(),
+            num_kernels: 100,
+            sample_skip: 0,
+            kernel_settings: Default::default(),
+        }
+    }
 }
 
 pub async fn begin_tor_farm(settings: Settings, resume: bool) -> Result<(), Box<dyn Error>> {

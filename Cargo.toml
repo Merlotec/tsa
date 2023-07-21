@@ -9,7 +9,7 @@ edition = "2021"
 tokio = { version = "1", features = ["full"] }
 nitscrape = {path = "../nitscrape"}
 clap = { version = "4.3.8", features = ["derive"] }
-rust-bert = "0.21.0"
+rust-bert = { version = "0.21.0" }
 csv = "1.2.2"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0.103"
