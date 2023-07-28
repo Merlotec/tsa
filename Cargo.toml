@@ -5,6 +5,9 @@ edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
+[env]
+LIBTORCH="~/downloads/libtorch"
+
 [dependencies]
 tokio = { version = "1", features = ["full"] }
 nitscrape = {path = "../nitscrape"}
@@ -19,3 +22,5 @@ tokio-util = "0.7.8"
 tokio-io = "0.1.13"
 tokio-metrics = "0.2.2"
 reqwest = { version = "0.11.18", features = ["socks"] }
+crossterm = "0.26.1"
+indicatif = "0.17.5"

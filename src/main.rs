@@ -1,11 +1,12 @@
 use std::{time::{SystemTime}, env::args, collections::HashMap, fs::File, io::Write, process::Command};
 use chrono::{NaiveDateTime, NaiveDate, DateTime, Utc};
+use clap::Parser;
 use nitscrape::{table::{self, CsvLayout}, twt::TweetId, twt::Tweet};
 use sentiment::ProcessedTweetRecord;
 use serde::{Deserializer, Deserialize};
 use stats::DataSeries;
 
-use crate::stats::TimeSeriesItem;
+use crate::{stats::TimeSeriesItem, tor_farm::ResumeMethod};
 
 pub mod sentiment;
 pub mod stats;
@@ -88,11 +89,27 @@ mod brx {
     }
 }
 
+#[derive(Debug, Default, Parser)]
+#[clap(name = "tsa", version, author = "Brodie Knight")]
+struct TsaArgs {
+    #[clap(long, short='t')]
+    resume_from_tweet: bool,
 
+    #[clap(long, short='f')]
+    dont_resume: bool,
+
+    #[clap(long, short='p')]
+    show_progress: bool,
+
+    #[clap(long, short='s')]
+    settings_path: Option<String>,
+}
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let settings_path = args().nth(1).unwrap_or("settings.json".to_owned());
+    let args = TsaArgs::parse();
+
+    let settings_path = args.settings_path.unwrap_or("settings.json".to_owned());
 
     if let Ok(settings_data) = std::fs::read_to_string(&settings_path) {
         //kill existing tor processes
@@ -104,7 +121,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         //hydrate(input, output, cursor, 1, 0, table::CsvLayout::without_timestamp(b'~', 0, Some(3))).await;
         //tor_farm::begin_tor_farm(input, table::CsvLayout::without_timestamp(b'~', 0, Some(3)), output, "C:\\Program Files\\Tor Browser\\Browser\\TorBrowser\\Tor\\tor.exe".to_owned(), "tor/torrc_base".to_owned(), 200, 0).await
-        tor_farm::begin_tor_farm(settings, true).await
+        
+        let resume = if args.dont_resume {
+            ResumeMethod::None
+        } else {
+            if args.resume_from_tweet {
+                ResumeMethod::TweetId
+            } else {
+                ResumeMethod::ResumeFile
+            }
+        };
+        tor_farm::begin_tor_farm(settings, resume, args.show_progress).await
     } else {
         // No settings file... create it
         match std::fs::write(&settings_path, serde_json::to_string(&tor_farm::Settings::default()).unwrap()) {
@@ -123,7 +150,7 @@ pub async fn hydrate(input: String, output: String, cursor: usize, sample_densit
     let mut hydrator = csv.hydrator(output, cursor).unwrap();
 
     // Use a batch of tor proxies - we create torrc files for each proxy for each port. This allows us to use multiple circuits simultaneously.
-    let tor_net_mgr = nitscrape::net::TorClientManager::generate_configs("C:\\Program Files\\Tor Browser\\Browser\\TorBrowser\\Tor\\tor.exe".to_owned(), "tor/torrc_base".to_owned(), 9000..9050).await.unwrap();
+    let tor_net_mgr = nitscrape::net::TorClientManager::generate_configs("C:\\Program Files\\Tor Browser\\Browser\\TorBrowser\\Tor\\tor.exe".to_owned(), "tor/torrc_base".to_owned(), 9000..9050, 30.0).await.unwrap();
     //let tor_net_mgr = nitscrape::net::TorClientManager::from_generated_configs("C:\\Program Files\\Tor Browser\\Browser\\TorBrowser\\Tor\\tor.exe".to_owned(), 9000..9100).unwrap();
 
     for i in 0.. {
