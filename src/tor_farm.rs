@@ -275,10 +275,14 @@ pub async fn begin_tor_farm(settings: Settings, resume: ResumeMethod, progress: 
 
     let mut t0: Option<SystemTime> = None;
     let mut max_i: u64 = i as u64;
-    let mut write_count: usize = 0;
+    let mut write_count: u64 = 0;
+    let mut req_count: u64 = 0;
+    let mut resp_count: u64 = 0;
     while !ct.is_cancelled() {
         // Iterate through outputs.
         for resp in farm.try_responses() {
+            req_count += resp.tries;
+            resp_count += 1;
             if resp.response.status().is_success() {
                 if let Ok(html) = resp.response.text().await {
                     match twt::parse_nitter(resp.req_data.id, html) {
@@ -302,6 +306,8 @@ pub async fn begin_tor_farm(settings: Settings, resume: ResumeMethod, progress: 
                                 let mut rw: f64 = f64::NAN;
                                 let mut ri: f64 = f64::NAN;
 
+                                let ar: f64 = req_count as f64 / resp_count as f64;
+
                                 if let Some(t0) = t0 {
                                     let delta = SystemTime::now().duration_since(t0).unwrap();
                                     rw = write_count as f64 / delta.as_secs_f64();
@@ -310,9 +316,9 @@ pub async fn begin_tor_farm(settings: Settings, resume: ResumeMethod, progress: 
                                     t0 = Some(SystemTime::now());
                                 }
                                 if let Some(pb) = &pb {
-                                    pb.println(format!("Written {} tweets (i={}, rw={}, ri={})", write_count, ci, rw, ri))
+                                    pb.println(format!("Written {} tweets (i={}, rw={}, ri={}, ar={})", write_count, ci, rw, ri, ar))
                                 } else {
-                                    println!("Written {} tweets (i={}, rw={}, ri={})", write_count, ci, rw, ri);
+                                    println!("Written {} tweets (i={}, rw={}, ri={}, ar={})", write_count, ci, rw, ri, ar);
                                 }
                                 
                             }

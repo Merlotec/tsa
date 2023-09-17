@@ -1,10 +1,18 @@
-use std::{time::{SystemTime}, env::args, collections::HashMap, fs::File, io::Write, process::Command};
-use chrono::{NaiveDateTime, NaiveDate, DateTime, Utc};
+use chrono::{DateTime, NaiveDate, NaiveDateTime, Utc};
 use clap::Parser;
-use nitscrape::{table::{self, CsvLayout}, twt::TweetId, twt::Tweet};
+use indicatif::ProgressBar;
+use nitscrape::{
+    table::{self, CsvLayout},
+    twt::Tweet,
+    twt::TweetId,
+};
 use sentiment::ProcessedTweetRecord;
-use serde::{Deserializer, Deserialize};
+use serde::{Deserialize, Deserializer};
 use stats::DataSeries;
+use std::{
+    borrow::Cow, collections::HashMap, env::args, fs::File, io::Write, path::PathBuf,
+    process::Command, str::FromStr, time::SystemTime,
+};
 
 use crate::{stats::TimeSeriesItem, tor_farm::ResumeMethod};
 
@@ -51,7 +59,6 @@ where
     NaiveDateTime::parse_from_str(&s, "%D %l:%M %p").map_err(serde::de::Error::custom)
 }
 
-
 mod brx {
     use nitscrape::twt::TweetId;
 
@@ -64,7 +71,7 @@ mod brx {
         #[serde(rename = "negative")]
         Negative,
     }
-    
+
     #[derive(Debug, serde::Serialize, serde::Deserialize)]
     pub enum Stance {
         #[serde(rename = "remain")]
@@ -74,7 +81,6 @@ mod brx {
         #[serde(rename = "other")]
         Other,
     }
-    
 
     #[derive(Debug, serde::Serialize, serde::Deserialize)]
     pub struct Item {
@@ -90,71 +96,195 @@ mod brx {
 }
 
 #[derive(Debug, Default, Parser)]
-#[clap(name = "tsa", version, author = "Brodie Knight")]
-struct TsaArgs {
-    #[clap(long, short='t')]
+struct DownloadArgs {
+    #[clap(long, short = 't')]
     resume_from_tweet: bool,
 
-    #[clap(long, short='f')]
+    #[clap(long, short = 'f')]
     dont_resume: bool,
 
-    #[clap(long, short='p')]
+    #[clap(long, short = 'p')]
     show_progress: bool,
 
-    #[clap(long, short='s')]
+    #[clap(long, short = 's')]
     settings_path: Option<String>,
+}
+
+#[derive(Debug, Default, Parser)]
+struct SentimentArgs {
+    #[clap(long, short = 'i')]
+    input_path: String,
+
+    #[clap(long, short = 'o')]
+    output_path: Option<String>,
+
+    #[clap(long, short = 'f')]
+    dont_resume: bool,
+
+    #[clap(long, short = 'p')]
+    show_progress: bool,
+}
+
+#[derive(Debug, Parser)]
+#[clap(name = "tsa", version, author = "Brodie Knight")]
+enum TsaCommand {
+    Download(DownloadArgs),
+    Sentiment(SentimentArgs),
 }
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let args = TsaArgs::parse();
+    let cmd: TsaCommand = TsaCommand::parse();
 
-    let settings_path = args.settings_path.unwrap_or("settings.json".to_owned());
+    match cmd {
+        TsaCommand::Download(args) => {
+            let settings_path = args.settings_path.unwrap_or("settings.json".to_owned());
 
-    if let Ok(settings_data) = std::fs::read_to_string(&settings_path) {
-        //kill existing tor processes
-        // let _ = Command::new("taskkill")
-        //     .args(["/IM", "tor.exe", "/F"])
-        //     .spawn().unwrap().wait();
-        let settings: tor_farm::Settings = serde_json::from_str(&settings_data)?;
-        println!("Hydrating from {} to {}", &settings.input_path, &settings.output_path);
+            if let Ok(settings_data) = std::fs::read_to_string(&settings_path) {
+                //kill existing tor processes
+                // let _ = Command::new("taskkill")
+                //     .args(["/IM", "tor.exe", "/F"])
+                //     .spawn().unwrap().wait();
+                let settings: tor_farm::Settings = serde_json::from_str(&settings_data)?;
+                println!(
+                    "Hydrating from {} to {}",
+                    &settings.input_path, &settings.output_path
+                );
 
-        //hydrate(input, output, cursor, 1, 0, table::CsvLayout::without_timestamp(b'~', 0, Some(3))).await;
-        //tor_farm::begin_tor_farm(input, table::CsvLayout::without_timestamp(b'~', 0, Some(3)), output, "C:\\Program Files\\Tor Browser\\Browser\\TorBrowser\\Tor\\tor.exe".to_owned(), "tor/torrc_base".to_owned(), 200, 0).await
-        
-        let resume = if args.dont_resume {
-            ResumeMethod::None
-        } else {
-            if args.resume_from_tweet {
-                ResumeMethod::TweetId
+                //hydrate(input, output, cursor, 1, 0, table::CsvLayout::without_timestamp(b'~', 0, Some(3))).await;
+                //tor_farm::begin_tor_farm(input, table::CsvLayout::without_timestamp(b'~', 0, Some(3)), output, "C:\\Program Files\\Tor Browser\\Browser\\TorBrowser\\Tor\\tor.exe".to_owned(), "tor/torrc_base".to_owned(), 200, 0).await
+
+                let resume = if args.dont_resume {
+                    ResumeMethod::None
+                } else {
+                    if args.resume_from_tweet {
+                        ResumeMethod::TweetId
+                    } else {
+                        ResumeMethod::ResumeFile
+                    }
+                };
+                tor_farm::begin_tor_farm(settings, resume, args.show_progress).await
             } else {
-                ResumeMethod::ResumeFile
-            }
-        };
-        tor_farm::begin_tor_farm(settings, resume, args.show_progress).await
-    } else {
-        // No settings file... create it
-        match std::fs::write(&settings_path, serde_json::to_string(&tor_farm::Settings::default()).unwrap()) {
-            Ok(_) => println!("No settings file - a template file has been written to {}", &settings_path),
-            Err(e) => println!("No settings file - failed to write a template file: {}", e),
-        }
-        
-        Ok(())
-    }
+                // No settings file... create it
+                match std::fs::write(
+                    &settings_path,
+                    serde_json::to_string(&tor_farm::Settings::default()).unwrap(),
+                ) {
+                    Ok(_) => println!(
+                        "No settings file - a template file has been written to {}",
+                        &settings_path
+                    ),
+                    Err(e) => println!("No settings file - failed to write a template file: {}", e),
+                }
 
+                Ok(())
+            }
+        }
+        TsaCommand::Sentiment(args) => {
+            let mut input = csv::ReaderBuilder::new().from_path(&args.input_path)?;
+
+            let out_path = args
+                .output_path
+                .or_else(|| default_output_path(&args.input_path, "_out"))
+                .ok_or("Could not determine default output path!")?;
+
+            let start_id: Option<TweetId> = {
+                if args.dont_resume {
+                    None
+                } else {
+                    // Try read output
+                    csv::ReaderBuilder::new()
+                        .from_path(&out_path)
+                        .ok()
+                        .and_then(|mut r| {
+                            r.deserialize::<Tweet>()
+                                .last()
+                                .map(|x| x.expect("Last element corrupted!").id)
+                        })
+                }
+            };
+
+            let mut output = csv::WriterBuilder::new().from_path(&out_path)?;
+            let model = tokio::task::spawn_blocking(|| {
+                sentiment::TWBSentimentAnalyser::general_sentiment_model().unwrap()
+            })
+            .await?;
+
+            let mut i = 0;
+            // Get cursor up to position
+            let mut reader = input.deserialize::<Tweet>();
+            if let Some(start_id) = start_id {
+                for j in 0.. {
+                    if let Some(Ok(t)) = reader.next() {
+                        if t.id == start_id {
+                            i = j;
+                            println!("Found tweet at index {}.", j);
+                            break;
+                        }
+                    }
+                }
+            }
+
+            let pb = {
+                if args.show_progress {
+                    // We need to read the length of the input:
+                    println!("Reading input csv file for progress bar (this may take a while)...");
+                    Some(ProgressBar::new(csv::ReaderBuilder::new().from_path(&args.input_path)?.records().count() as u64))
+                } else {
+                    None
+                }
+            };
+        
+
+            for tweet in reader {
+                if let Ok(tweet) = tweet {
+                    if tweet.lang == Some(nitscrape::twt::Language::English) {
+                        let record = ProcessedTweetRecord::from(model.process_tweet(tweet));
+                        let _ = output.serialize(record);
+                    }
+                }
+                i += 1;
+                if let Some(pb) = &pb {
+                    pb.set_position(i as u64);
+                }
+            }
+            Ok(())
+        }
+    }
 }
 
-
-pub async fn hydrate(input: String, output: String, cursor: usize, sample_density: usize, attempts: usize, layout: CsvLayout) {
+pub async fn hydrate(
+    input: String,
+    output: String,
+    cursor: usize,
+    sample_density: usize,
+    attempts: usize,
+    layout: CsvLayout,
+) {
     let mut csv = table::TweetCsvReader::read_csv(input, layout).unwrap();
     let mut hydrator = csv.hydrator(output, cursor).unwrap();
 
     // Use a batch of tor proxies - we create torrc files for each proxy for each port. This allows us to use multiple circuits simultaneously.
-    let tor_net_mgr = nitscrape::net::TorClientManager::generate_configs("C:\\Program Files\\Tor Browser\\Browser\\TorBrowser\\Tor\\tor.exe".to_owned(), "tor/torrc_base".to_owned(), 9000..9050, 30.0).await.unwrap();
+    let tor_net_mgr = nitscrape::net::TorClientManager::generate_configs(
+        "C:\\Program Files\\Tor Browser\\Browser\\TorBrowser\\Tor\\tor.exe".to_owned(),
+        "tor/torrc_base".to_owned(),
+        9000..9050,
+        30.0,
+    )
+    .await
+    .unwrap();
     //let tor_net_mgr = nitscrape::net::TorClientManager::from_generated_configs("C:\\Program Files\\Tor Browser\\Browser\\TorBrowser\\Tor\\tor.exe".to_owned(), 9000..9100).unwrap();
 
     for i in 0.. {
-        if let Err(e) = hydrator.hydrate_batch(&mut tor_net_mgr.iter(), nitscrape::twt::BATCH_SIZE, sample_density, attempts).await {
+        if let Err(e) = hydrator
+            .hydrate_batch(
+                &mut tor_net_mgr.iter(),
+                nitscrape::twt::BATCH_SIZE,
+                sample_density,
+                attempts,
+            )
+            .await
+        {
             println!("Error at batch {}: {}", i, e);
             break;
         } else {
@@ -162,8 +292,6 @@ pub async fn hydrate(input: String, output: String, cursor: usize, sample_densit
         }
     }
 }
-
-
 
 /*
 fn main() {
@@ -179,10 +307,10 @@ pub fn analyse_sentiment() {
 pub fn compile_us_election_tweets() {
     let mut index_csv = csv::ReaderBuilder::new()
         .delimiter(b';')
-        .from_path("tweets.csv").unwrap();
+        .from_path("tweets.csv")
+        .unwrap();
 
-    let mut tweets_csv = csv::ReaderBuilder::new()
-        .from_path("hydrated.csv").unwrap();
+    let mut tweets_csv = csv::ReaderBuilder::new().from_path("hydrated.csv").unwrap();
 
     let mut rep_writer = csv::WriterBuilder::new().from_path("rep.csv").unwrap();
     let mut dem_writer = csv::WriterBuilder::new().from_path("dem.csv").unwrap();
@@ -194,7 +322,7 @@ pub fn compile_us_election_tweets() {
     let analyser = sentiment::TWBSentimentAnalyser::general_sentiment_model().unwrap();
 
     for (i, record) in index_csv.records().enumerate() {
-        if i % 10000 == 0{
+        if i % 10000 == 0 {
             println!("{} tweets processed", i);
         }
         if let Ok(record) = record {
@@ -202,9 +330,17 @@ pub fn compile_us_election_tweets() {
                 if &id == &tweet.id {
                     if let Some(topic) = record.get(5) {
                         if topic == "Republicans" {
-                            rep_writer.serialize(ProcessedTweetRecord::from(analyser.process_tweet(tweet.clone()))).unwrap();
+                            rep_writer
+                                .serialize(ProcessedTweetRecord::from(
+                                    analyser.process_tweet(tweet.clone()),
+                                ))
+                                .unwrap();
                         } else if topic == "Democrats" {
-                            dem_writer.serialize(ProcessedTweetRecord::from(analyser.process_tweet(tweet.clone()))).unwrap();
+                            dem_writer
+                                .serialize(ProcessedTweetRecord::from(
+                                    analyser.process_tweet(tweet.clone()),
+                                ))
+                                .unwrap();
                         }
                     }
                     if let Some(next) = tweet_reader.next().map(Result::unwrap) {
@@ -217,31 +353,64 @@ pub fn compile_us_election_tweets() {
 }
 
 pub fn plot_graphs() {
-    let graph = stats::TweetSeries::from_processed_tweets_csv("rep.csv", NaiveDate::from_ymd_opt(2020, 7, 1).unwrap().and_hms_opt(12, 0, 0).unwrap().and_utc(), chrono::Duration::days(4)).unwrap();
-    
+    let graph = stats::TweetSeries::from_processed_tweets_csv(
+        "rep.csv",
+        NaiveDate::from_ymd_opt(2016, 7, 1)
+            .unwrap()
+            .and_hms_opt(12, 0, 0)
+            .unwrap()
+            .and_utc(),
+        chrono::Duration::days(4),
+    )
+    .unwrap();
+
     let mut total = 0;
 
     for (i, d) in graph.data.iter().enumerate() {
         total += d.len();
-        println!("{}: len {}, mean {}", i, d.len(), d.iter().map(TimeSeriesItem::value).sum::<f64>() / d.len() as f64)
+        println!(
+            "{}: len {}, mean {}",
+            i,
+            d.len(),
+            d.iter().map(TimeSeriesItem::value).sum::<f64>() / d.len() as f64
+        )
     }
 
     println!("TOTAL: {}", total);
-    
-    graph.linear_graph(Some(-1.0), Some(1.0), "US Election Tweet Sentiment", "Net Positivity", "sent_rep.png").unwrap();
 
-    let common_words: HashMap<String, ()> = csv::ReaderBuilder::new().from_path("common_words.csv").unwrap().records().filter_map(Result::ok).map(|x| (x.get(0).unwrap().to_owned(), ())).collect();
+    graph
+        .linear_graph(
+            Some(-1.0),
+            Some(1.0),
+            "Brexit Tweet Sentiment",
+            "Net Positivity",
+            "sent_brx.png",
+        )
+        .unwrap();
+
+    let common_words: HashMap<String, ()> = csv::ReaderBuilder::new()
+        .from_path("common_words.csv")
+        .unwrap()
+        .records()
+        .filter_map(Result::ok)
+        .map(|x| (x.get(0).unwrap().to_owned(), ()))
+        .collect();
 
     let mut table: Vec<Vec<String>> = Vec::new();
 
     for tweets in graph.data.iter() {
         let mut tmap = HashMap::<String, u32>::new();
-        
+
         let mut row: Vec<String> = Vec::new();
 
         for ptweet in tweets.iter() {
             for word in ptweet.tweet.text.split_ascii_whitespace() {
-                let w = word.to_owned().to_lowercase().replace(&['(', ')', ',', '\"', '.', ';', ':', '\'', '-', '&', '!', '?', '—', ' '], "");
+                let w = word.to_owned().to_lowercase().replace(
+                    &[
+                        '(', ')', ',', '\"', '.', ';', ':', '\'', '-', '&', '!', '?', '—', ' ',
+                    ],
+                    "",
+                );
                 if !common_words.contains_key(&w) {
                     if let Some(counter) = tmap.get_mut(&w) {
                         *counter += 1;
@@ -259,7 +428,12 @@ pub fn plot_graphs() {
 
         'l: for (i, (w, n)) in vec.into_iter().enumerate() {
             if i < 30 {
-                row.push(format!("{} ({}, {:.2}%)", w, n, (n as f32 / tweets.len() as f32) * 100.0));
+                row.push(format!(
+                    "{} ({}, {:.2}%)",
+                    w,
+                    n,
+                    (n as f32 / tweets.len() as f32) * 100.0
+                ));
             } else {
                 break 'l;
             }
@@ -270,7 +444,11 @@ pub fn plot_graphs() {
 
     let mut i: usize = 0;
     loop {
-        let max_len = table.iter().filter_map(|x: &Vec<String>| x.get(i)).map(|x| x.chars().count()).max();
+        let max_len = table
+            .iter()
+            .filter_map(|x: &Vec<String>| x.get(i))
+            .map(|x| x.chars().count())
+            .max();
         if let Some(max_len) = max_len {
             for row in table.iter_mut() {
                 if let Some(item) = row.get_mut(i) {
@@ -283,7 +461,7 @@ pub fn plot_graphs() {
             i += 1;
         } else {
             break;
-        } 
+        }
     }
 
     let mut f = File::create("words.txt").unwrap();
@@ -294,15 +472,22 @@ pub fn plot_graphs() {
         }
         write!(f, "\n");
     }
-
 }
 
 pub fn show_existing_sentiment() {
-    let mut graph: DataSeries = stats::DataSeries::new(NaiveDate::from_ymd_opt(2020, 7, 1).unwrap().and_hms_opt(12, 0, 0).unwrap().and_utc(), chrono::Duration::days(1));
+    let mut graph: DataSeries = stats::DataSeries::new(
+        NaiveDate::from_ymd_opt(2020, 7, 1)
+            .unwrap()
+            .and_hms_opt(12, 0, 0)
+            .unwrap()
+            .and_utc(),
+        chrono::Duration::days(1),
+    );
 
     let mut index_csv = csv::ReaderBuilder::new()
         .delimiter(b';')
-        .from_path("tweets.csv").unwrap();
+        .from_path("tweets.csv")
+        .unwrap();
 
     for (i, item) in index_csv.deserialize::<IndexEntry>().enumerate() {
         if i % 10000 == 0 {
@@ -315,7 +500,32 @@ pub fn show_existing_sentiment() {
         }
     }
 
+    graph
+        .linear_graph(
+            Some(-1.0),
+            Some(1.0),
+            "US Election Tweet Sentiment",
+            "Net Positivity",
+            "idxsent_both.png",
+        )
+        .unwrap();
+}
 
-    graph.linear_graph(Some(-1.0), Some(1.0), "US Election Tweet Sentiment", "Net Positivity", "idxsent_both.png").unwrap();
+fn default_output_path(base: &str, append: &str) -> Option<String> {
+    let pb = PathBuf::from_str(base).ok()?;
+    let dir = pb
+        .parent()
+        .map(|x| x.to_string_lossy())
+        .unwrap_or(Cow::Borrowed(""));
+    let stem = pb.file_stem()?.to_string_lossy();
+    let mut f: String = stem.into_owned() + append;
+    if let Some(ext) = pb.extension().map(|x| x.to_string_lossy()) {
+        f += ".";
+        f += ext.as_ref();
+    }
 
+    let mut buf = PathBuf::from_str(&dir).ok()?;
+    buf.push(f);
+
+    Some(buf.to_string_lossy().into())
 }
