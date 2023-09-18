@@ -133,11 +133,38 @@ pub struct TweetSeries<T: TimeSeriesItem> {
 }
 
 impl TweetSeries<ProcessedTweet> {
-    pub fn from_processed_tweets_csv<P: AsRef<std::path::Path>>(path: P, start: DateTime<Utc>, interval: chrono::Duration) -> csv::Result<Self> {
+    pub fn from_processed_tweets_csv_with_start<P: AsRef<std::path::Path>>(path: P, start: DateTime<Utc>, interval: chrono::Duration) -> csv::Result<Self> {
         let mut tweets_csv = csv::ReaderBuilder::new()
             .from_path(path)?;
 
         let mut series = Self::new(start, interval);
+
+        for tweet in tweets_csv.deserialize::<ProcessedTweetRecord>() {
+            if let Ok(tweet) = tweet.map(ProcessedTweetRecord::processed_tweet) {
+                series.insert_tweet(tweet);
+            }
+        }
+
+        Ok(series)
+    }
+
+    pub fn from_processed_tweets_csv<P: AsRef<std::path::Path>>(path: P, interval: chrono::Duration) -> csv::Result<Self> {
+        let mut tweets_csv = csv::ReaderBuilder::new()
+            .from_path(path)?;
+
+        // Find the start
+        let mut tbuf: Option<DateTime<Utc>> = None;
+        for tweet in tweets_csv.deserialize::<ProcessedTweetRecord>() {
+            if let Ok(tweet) = tweet.map(ProcessedTweetRecord::processed_tweet) {
+                let ts = tweet.timestamp();
+                match tbuf {
+                    Some(t) => if ts < t { tbuf = Some(ts) },
+                    None => tbuf = Some(ts),
+                }
+            }
+        }
+
+        let mut series = Self::new(tbuf.unwrap(), interval);
 
         for tweet in tweets_csv.deserialize::<ProcessedTweetRecord>() {
             if let Ok(tweet) = tweet.map(ProcessedTweetRecord::processed_tweet) {

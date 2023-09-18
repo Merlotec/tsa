@@ -1,7 +1,6 @@
 use nitscrape::twt::{Tweet, TweetId};
 
 use rust_bert::RustBertError;
-use rust_bert::fnet::{FNetConfigResources, FNetModelResources, FNetVocabResources};
 use rust_bert::pipelines::common::{ModelResource, ModelType};
 use rust_bert::pipelines::sentiment::{SentimentConfig, SentimentModel, Sentiment, SentimentPolarity};
 use rust_bert::resources::RemoteResource;
@@ -9,10 +8,6 @@ use serde::{Serialize, Deserialize};
 use chrono::{DateTime, Utc};
 
 use crate::stats::TimeSeriesItem;
-
-pub struct Params<const N: usize> {
-    values: [f32; N],
-}
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ProcessedTweet {

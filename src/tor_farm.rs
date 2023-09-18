@@ -4,15 +4,13 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::SystemTime;
-use std::{fmt, error::Error, fs::File};
+use std::error::Error;
 use indicatif::ProgressBar;
 use nitscrape::net::{TorClientManager, TorKernelSettings};
 use nitscrape::twt::{NitScrapeError, TweetError, Tweet};
 use nitscrape::{twt, table};
 use nitscrape::net;
 use nitscrape::table::{TweetEntry, TweetCsvReader, CsvLayout};
-use reqwest::header::HeaderValue;
-use reqwest::{Method, Url};
 use tokio_util::sync::CancellationToken;
 
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -59,11 +57,6 @@ pub enum ResumeMethod {
     ResumeFile,
     TweetId,
     None,
-}
-
-pub struct IndexedTweetEntry {
-    i: Option<usize>,
-    entry: TweetEntry,
 }
 
 pub async fn begin_tor_farm(settings: Settings, resume: ResumeMethod, progress: bool) -> Result<(), Box<dyn Error>> {
@@ -250,7 +243,6 @@ pub async fn begin_tor_farm(settings: Settings, resume: ResumeMethod, progress: 
         tokio::spawn(async move {
             while !ct.is_cancelled() {
                 if is.capacity() > 0 {
-                    let cidx = cur_index.load(Ordering::Relaxed);
                     match csv.tweet_entries().nth(settings.sample_skip) {
                         Some(Ok(next_entry)) => {
                             // Add to queue.

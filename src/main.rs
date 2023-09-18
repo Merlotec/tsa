@@ -1,6 +1,6 @@
-use chrono::{DateTime, NaiveDate, NaiveDateTime, Utc};
+use chrono::{NaiveDate, NaiveDateTime};
 use clap::Parser;
-use indicatif::ProgressBar;
+use indicatif::{ProgressBar, ProgressState, ProgressStyle};
 use nitscrape::{
     table::{self, CsvLayout},
     twt::Tweet,
@@ -10,8 +10,8 @@ use sentiment::ProcessedTweetRecord;
 use serde::{Deserialize, Deserializer};
 use stats::DataSeries;
 use std::{
-    borrow::Cow, collections::HashMap, env::args, fs::File, io::Write, path::PathBuf,
-    process::Command, str::FromStr, time::SystemTime,
+    borrow::Cow, collections::HashMap, fs::File, io::Write, path::PathBuf,
+    str::FromStr,
 };
 
 use crate::{stats::TimeSeriesItem, tor_farm::ResumeMethod};
@@ -125,11 +125,30 @@ struct SentimentArgs {
     show_progress: bool,
 }
 
+#[derive(Debug, Default, Parser)]
+struct PlotArgs {
+    #[clap(long, short = 'i')]
+    input_path: String,
+
+    #[clap(long, short = 'o')]
+    output_path: Option<String>,
+
+    #[clap(long, short = 't')]
+    title: Option<String>,
+
+    #[clap(long, short = 'y')]
+    y_desc: Option<String>,
+
+    #[clap(long, short = 'v')]
+    interval: Option<i64>,
+}
+
 #[derive(Debug, Parser)]
 #[clap(name = "tsa", version, author = "Brodie Knight")]
 enum TsaCommand {
     Download(DownloadArgs),
     Sentiment(SentimentArgs),
+    Plot(PlotArgs),
 }
 
 #[tokio::main]
@@ -229,12 +248,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 if args.show_progress {
                     // We need to read the length of the input:
                     println!("Reading input csv file for progress bar (this may take a while)...");
-                    Some(ProgressBar::new(csv::ReaderBuilder::new().from_path(&args.input_path)?.records().count() as u64))
+                    let bar = ProgressBar::new(
+                        csv::ReaderBuilder::new()
+                            .from_path(&args.input_path)?
+                            .records()
+                            .count() as u64,
+                    );
+                    bar.set_style(ProgressStyle::with_template("{spinner:.green} [{elapsed_precise}] [{wide_bar:.cyan/blue}] {pos}/{len} ({eta})").unwrap().with_key("eta", |state: &ProgressState, w: &mut dyn std::fmt::Write| write!(w, "{:.1}min", state.eta().as_secs_f64() / 60.0).unwrap()));
+                    Some(bar)
                 } else {
                     None
                 }
             };
-        
 
             for tweet in reader {
                 if let Ok(tweet) = tweet {
@@ -249,7 +274,40 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
             Ok(())
-        }
+        },
+        TsaCommand::Plot(args) => {
+            let graph = stats::TweetSeries::from_processed_tweets_csv(
+                args.input_path,
+                chrono::Duration::days(args.interval.unwrap_or(4)),
+            )
+            .unwrap();
+        
+            let mut total = 0;
+        
+            for (i, d) in graph.data.iter().enumerate() {
+                total += d.len();
+                println!(
+                    "{}: len {}, mean {}",
+                    i,
+                    d.len(),
+                    d.iter().map(TimeSeriesItem::value).sum::<f64>() / d.len() as f64
+                )
+            }
+        
+            println!("TOTAL: {}", total);
+        
+            graph
+                .linear_graph(
+                    Some(-1.0),
+                    Some(1.0),
+                    args.title.unwrap_or_default(),
+                    args.y_desc.unwrap_or_default(),
+                    args.output_path.unwrap_or("graph.png".to_owned()),
+                )
+                .unwrap();
+
+            Ok(())
+        },
     }
 }
 
@@ -353,7 +411,7 @@ pub fn compile_us_election_tweets() {
 }
 
 pub fn plot_graphs() {
-    let graph = stats::TweetSeries::from_processed_tweets_csv(
+    let graph = stats::TweetSeries::from_processed_tweets_csv_with_start(
         "rep.csv",
         NaiveDate::from_ymd_opt(2016, 7, 1)
             .unwrap()
@@ -468,9 +526,9 @@ pub fn plot_graphs() {
 
     for row in table {
         for item in row {
-            write!(f, "{} ", item);
+            let _ = write!(f, "{} ", item);
         }
-        write!(f, "\n");
+        let _ = write!(f, "\n");
     }
 }
 
