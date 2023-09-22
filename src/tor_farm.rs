@@ -196,7 +196,7 @@ pub async fn begin_tor_farm(settings: Settings, resume: ResumeMethod, progress: 
 
     let output_csv = OpenOptions::new()
         .write(true)
-        .append(true)
+        .append(resume != ResumeMethod::None)
         .create(true)
         .open(&output_path)?;
 

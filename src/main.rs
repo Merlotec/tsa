@@ -10,7 +10,7 @@ use sentiment::ProcessedTweetRecord;
 use serde::{Deserialize, Deserializer};
 use stats::DataSeries;
 use std::{
-    borrow::Cow, collections::HashMap, fs::File, io::Write, path::PathBuf,
+    borrow::Cow, collections::HashMap, fs::{File, OpenOptions}, io::Write, path::PathBuf,
     str::FromStr,
 };
 
@@ -19,6 +19,10 @@ use crate::{stats::TimeSeriesItem, tor_farm::ResumeMethod};
 pub mod sentiment;
 pub mod stats;
 pub mod tor_farm;
+
+pub const JUNK_CHARACTERS: [char; 20] = [
+    '(', ')', ',', '\"', '.', ';', ':', '\'', '-', '&', '!', '?', '—', ' ', '–', '|', '“', '”', '‘', '’'
+];
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct IndexEntry {
@@ -127,11 +131,14 @@ struct SentimentArgs {
 
 #[derive(Debug, Default, Parser)]
 struct PlotArgs {
-    #[clap(long, short = 'i')]
-    input_path: String,
+    #[clap(long, short = 'o', default_value="graph.png")]
+    output_path: String,
 
-    #[clap(long, short = 'o')]
-    output_path: Option<String>,
+    #[clap(long, short = 'i', num_args = 1.., value_delimiter = ' ')]
+    input_paths: Vec<String>,
+
+    #[clap(long, short = 'f', default_value="%Y-%m")]
+    date_format: String,
 
     #[clap(long, short = 't')]
     title: Option<String>,
@@ -139,8 +146,62 @@ struct PlotArgs {
     #[clap(long, short = 'y')]
     y_desc: Option<String>,
 
-    #[clap(long, short = 'v')]
-    interval: Option<i64>,
+    #[clap(long, short = 's')]
+    start: Option<String>,
+
+    #[clap(long, short = 'd', default_value="4")]
+    interval: i64,
+}
+
+#[derive(Debug, Default, Parser)]
+struct WordPlotArgs {
+    #[clap(long, short = 'o', default_value="words_graph.png")]
+    output_path: String,
+
+    #[clap(long, short = 'i', num_args = 1.., value_delimiter = ' ')]
+    input_paths: Vec<String>,
+
+    #[clap(long, short = 'w', num_args = 1.., value_delimiter = ' ')]
+    words: Vec<String>,
+    
+    #[clap(long, short = 'n')]
+    normalise: bool,
+
+    #[clap(long, short = 'f', default_value="%Y-%m")]
+    date_format: String,
+
+    #[clap(long, short = 't')]
+    title: Option<String>,
+
+    #[clap(long, short = 'y')]
+    y_desc: Option<String>,
+
+    #[clap(long, short = 's')]
+    start: Option<String>,
+
+    #[clap(long, short = 'd', default_value="4")]
+    interval: i64,
+}
+
+#[derive(Debug, Default, Parser)]
+struct WordsArgs {
+    #[clap(long, short = 'i', num_args = 1.., value_delimiter = ' ')]
+    input_paths: Vec<String>,
+
+    #[clap(long, short = 'o', default_value="words.txt")]
+    output_path: String,
+
+    #[clap(long, short = 'x', default_value="ignore.csv")]
+    ignore_path: String,
+
+    #[clap(long, short = 'n', default_value="20")]
+    num_words: i32,
+
+    #[clap(long, short = 's')]
+    start: Option<String>,
+
+    #[clap(long, short = 'v', default_value="4")]
+    interval: i64,
 }
 
 #[derive(Debug, Parser)]
@@ -149,6 +210,8 @@ enum TsaCommand {
     Download(DownloadArgs),
     Sentiment(SentimentArgs),
     Plot(PlotArgs),
+    PlotWords(WordPlotArgs),
+    Words(WordsArgs),
 }
 
 #[tokio::main]
@@ -223,7 +286,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             };
 
-            let mut output = csv::WriterBuilder::new().from_path(&out_path)?;
+            let output_file = OpenOptions::new()
+                .write(true)
+                .append(!args.dont_resume)
+                .create(true)
+                .open(&out_path)?;
+
+            let mut output = csv::Writer::from_writer(output_file);
+        
             let model = tokio::task::spawn_blocking(|| {
                 sentiment::TWBSentimentAnalyser::general_sentiment_model().unwrap()
             })
@@ -276,11 +346,34 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             Ok(())
         },
         TsaCommand::Plot(args) => {
-            let graph = stats::TweetSeries::from_processed_tweets_csv(
-                args.input_path,
-                chrono::Duration::days(args.interval.unwrap_or(4)),
-            )
-            .unwrap();
+            let interval_days = args.interval;
+            let graph = if let Some(start) = args.start {
+                match chrono::NaiveDate::parse_from_str(&start, "%d/%m/%Y") {
+                    Ok(x) => {
+                        let dt = chrono::DateTime::<chrono::Utc>::from_utc(
+                            x.and_hms_opt(12, 0, 0).unwrap(),
+                            chrono::Utc,
+                        );
+                        stats::TweetSeries::from_processed_tweets_csv(
+                            &args.input_paths,
+                            Some(dt),
+                            chrono::Duration::days(interval_days),
+                        )
+                        .unwrap()
+                    }
+                    Err(e) => {
+                        panic!("Failed to parse start date: {}", e);
+                    }
+                }
+            } else {
+                stats::TweetSeries::from_processed_tweets_csv(
+                    &args.input_paths,
+                    None,
+                    chrono::Duration::days(interval_days),
+                )
+                .unwrap()
+            };
+
         
             let mut total = 0;
         
@@ -296,15 +389,178 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         
             println!("TOTAL: {}", total);
         
-            graph
-                .linear_graph(
-                    Some(-1.0),
-                    Some(1.0),
-                    args.title.unwrap_or_default(),
-                    args.y_desc.unwrap_or_default(),
-                    args.output_path.unwrap_or("graph.png".to_owned()),
+            stats::linear_graph(
+                graph.ave_series_dt(),
+                graph.start_date(),
+                graph.end_date(),
+                Some(-1.0),
+                Some(1.0),
+                &args.date_format,
+                args.title.unwrap_or_default(),
+                args.y_desc.unwrap_or_default(),
+                &args.output_path,
+            )
+            .unwrap();
+
+            Ok(())
+        },
+        TsaCommand::PlotWords(args) => {
+            let interval_days = args.interval;
+            let graph = if let Some(start) = args.start {
+                match chrono::NaiveDate::parse_from_str(&start, "%d/%m/%Y") {
+                    Ok(x) => {
+                        let dt = chrono::DateTime::<chrono::Utc>::from_utc(
+                            x.and_hms_opt(12, 0, 0).unwrap(),
+                            chrono::Utc,
+                        );
+                        stats::TweetSeries::from_processed_tweets_csv_with_words(
+                            &args.input_paths,
+                            Some(dt),
+                            chrono::Duration::days(interval_days),
+                            &args.words,
+                        )
+                        .unwrap()
+                    }
+                    Err(e) => {
+                        panic!("Failed to parse start date: {}", e);
+                    }
+                }
+            } else {
+                stats::TweetSeries::from_processed_tweets_csv_with_words(
+                    &args.input_paths,
+                    None,
+                    chrono::Duration::days(interval_days),
+                    &args.words,
                 )
-                .unwrap();
+                .unwrap()
+            };
+        
+            stats::linear_graph(
+                if args.normalise { graph.ave_series_dt() } else { graph.sum_series_dt() },
+                graph.start_date(),
+                graph.end_date(),
+                None,
+                None,
+                &args.date_format,
+                args.title.unwrap_or_default(),
+                args.y_desc.unwrap_or_default(),
+                &args.output_path,
+            )
+            .unwrap();
+
+            Ok(())
+        },
+        TsaCommand::Words(args) => {
+            let interval_days = args.interval;
+            let graph = if let Some(start) = args.start {
+                match chrono::NaiveDate::parse_from_str(&start, "%d/%m/%Y") {
+                    Ok(x) => {
+                        let dt = chrono::DateTime::<chrono::Utc>::from_utc(
+                            x.and_hms_opt(12, 0, 0).unwrap(),
+                            chrono::Utc,
+                        );
+                        stats::TweetSeries::from_processed_tweets_csv(
+                            &args.input_paths,
+                            Some(dt),
+                            chrono::Duration::days(interval_days),
+                        )
+                        .unwrap()
+                    }
+                    Err(e) => {
+                        panic!("Failed to parse start date: {}", e);
+                    }
+                }
+            } else {
+                stats::TweetSeries::from_processed_tweets_csv(
+                    &args.input_paths,
+                    None,
+                    chrono::Duration::days(interval_days),
+                )
+                .unwrap()
+            };
+
+            let common_words: HashMap<String, ()> = csv::ReaderBuilder::new()
+                .from_path(&args.ignore_path)
+                .unwrap()
+                .records()
+                .filter_map(Result::ok)
+                .map(|x| (x.get(0).unwrap().to_owned(), ()))
+                .collect();
+
+            let mut table: Vec<Vec<String>> = Vec::new();
+
+            for tweets in graph.data.iter() {
+                let mut tmap = HashMap::<String, u32>::new();
+
+                let mut row: Vec<String> = Vec::new();
+
+                for ptweet in tweets.iter() {
+                    for word in ptweet.tweet.text.split_ascii_whitespace() {
+                        let w = word.to_owned().to_lowercase().replace(
+                            &JUNK_CHARACTERS,
+                            "",
+                        );
+                        if !common_words.contains_key(&w) {
+                            if let Some(counter) = tmap.get_mut(&w) {
+                                *counter += 1;
+                            } else {
+                                if !w.is_empty() {
+                                    tmap.insert(w, 1);
+                                }
+                            }
+                        }
+                    }
+                }
+                // Sort to rank words.
+                let mut vec = tmap.into_iter().collect::<Vec<(String, u32)>>();
+                vec.sort_by_key(|x| -(x.1 as i32));
+
+                'l: for (i, (w, n)) in vec.into_iter().enumerate() {
+                    if i < 30 {
+                        row.push(format!(
+                            "{} ({}, {:.2}%)",
+                            w,
+                            n,
+                            (n as f32 / tweets.len() as f32) * 100.0
+                        ));
+                    } else {
+                        break 'l;
+                    }
+                }
+
+                table.push(row);
+            }
+
+            let mut i: usize = 0;
+            loop {
+                let max_len = table
+                    .iter()
+                    .filter_map(|x: &Vec<String>| x.get(i))
+                    .map(|x| x.chars().count())
+                    .max();
+                if let Some(max_len) = max_len {
+                    for row in table.iter_mut() {
+                        if let Some(item) = row.get_mut(i) {
+                            let diff = max_len - item.chars().count();
+                            *item += ",";
+                            *item += &vec![' '; diff].into_iter().collect::<String>();
+                        }
+                    }
+
+                    i += 1;
+                } else {
+                    break;
+                }
+            }
+
+            let mut f = File::create(&args.output_path).unwrap();
+
+            for row in table {
+                for item in row {
+                    let _ = write!(f, "{} ", item);
+                }
+                let _ = write!(f, "\n");
+            }
 
             Ok(())
         },
@@ -411,13 +667,13 @@ pub fn compile_us_election_tweets() {
 }
 
 pub fn plot_graphs() {
-    let graph = stats::TweetSeries::from_processed_tweets_csv_with_start(
-        "rep.csv",
-        NaiveDate::from_ymd_opt(2016, 7, 1)
+    let graph = stats::TweetSeries::from_processed_tweets_csv(
+        &["rep.csv"],
+        Some(NaiveDate::from_ymd_opt(2016, 7, 1)
             .unwrap()
             .and_hms_opt(12, 0, 0)
             .unwrap()
-            .and_utc(),
+            .and_utc()),
         chrono::Duration::days(4),
     )
     .unwrap();
@@ -436,13 +692,16 @@ pub fn plot_graphs() {
 
     println!("TOTAL: {}", total);
 
-    graph
-        .linear_graph(
-            Some(-1.0),
-            Some(1.0),
-            "Brexit Tweet Sentiment",
-            "Net Positivity",
-            "sent_brx.png",
+    stats::linear_graph(
+        graph.ave_series_dt(),
+        graph.start_date(),
+        graph.end_date(),
+        Some(-1.0),
+        Some(1.0),
+        "%Y-%M",
+        "Brexit Tweet Sentiment",
+        "Net Positivity",
+        "sent_brx.png",
         )
         .unwrap();
 

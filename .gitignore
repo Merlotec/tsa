@@ -1,5 +1,7 @@
 /target
 /*.csv
+/*.png
+/
 /tor
 /csv
 /brexit
@@ -10,3 +12,4 @@
 /data
 /tsa.exe
 /tsa
+!ignore.csv

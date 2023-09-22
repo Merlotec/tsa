@@ -5,6 +5,19 @@ use plotters::prelude::*;
 
 use crate::sentiment::{ProcessedTweet, ProcessedTweetRecord};
 
+pub struct WordOccurrence {
+    pub time: DateTime<Utc>,
+    pub n: u64,
+}
+
+impl TimeSeriesItem for WordOccurrence {
+    fn timestamp(&self) -> DateTime<Utc> {
+        self.time
+    }
+    fn value(&self) -> f64 {
+        self.n as f64
+    }
+}
 
 pub trait TimeSeriesItem {
     fn timestamp(&self) -> DateTime<Utc>;
@@ -51,6 +64,10 @@ impl DataSeries {
             }
             self.data.push((v, 1));
         }
+    }
+
+    pub fn start_date(&self) -> DateTime<Utc> {
+        self.start
     }
 
     pub fn series_days(&self) -> Vec<(f64, f64)> {
@@ -132,45 +149,81 @@ pub struct TweetSeries<T: TimeSeriesItem> {
     pub data: Vec<Vec<T>>,
 }
 
-impl TweetSeries<ProcessedTweet> {
-    pub fn from_processed_tweets_csv_with_start<P: AsRef<std::path::Path>>(path: P, start: DateTime<Utc>, interval: chrono::Duration) -> csv::Result<Self> {
-        let mut tweets_csv = csv::ReaderBuilder::new()
-            .from_path(path)?;
-
-        let mut series = Self::new(start, interval);
-
-        for tweet in tweets_csv.deserialize::<ProcessedTweetRecord>() {
-            if let Ok(tweet) = tweet.map(ProcessedTweetRecord::processed_tweet) {
-                series.insert_tweet(tweet);
-            }
-        }
-
-        Ok(series)
-    }
-
-    pub fn from_processed_tweets_csv<P: AsRef<std::path::Path>>(path: P, interval: chrono::Duration) -> csv::Result<Self> {
-        let mut tweets_csv = csv::ReaderBuilder::new()
-            .from_path(path)?;
-
+impl TweetSeries<WordOccurrence> {
+    pub fn from_processed_tweets_csv_with_words<P: AsRef<std::path::Path>>(paths: &[P], start: Option<DateTime<Utc>>, interval: chrono::Duration, words: &[String]) -> csv::Result<Self> {
         // Find the start
-        let mut tbuf: Option<DateTime<Utc>> = None;
-        for tweet in tweets_csv.deserialize::<ProcessedTweetRecord>() {
-            if let Ok(tweet) = tweet.map(ProcessedTweetRecord::processed_tweet) {
-                let ts = tweet.timestamp();
-                match tbuf {
-                    Some(t) => if ts < t { tbuf = Some(ts) },
-                    None => tbuf = Some(ts),
+
+        let mut tbuf: Option<DateTime<Utc>> = start;
+        if tbuf.is_none() {
+            for path in paths {
+                let mut tweets_csv = csv::ReaderBuilder::new()
+                    .from_path(&path)?;
+                for tweet in tweets_csv.deserialize::<ProcessedTweetRecord>() {
+                    if let Ok(tweet) = tweet.map(ProcessedTweetRecord::processed_tweet) {
+                        let ts = tweet.timestamp();
+                        match tbuf {
+                            Some(t) => if ts < t { tbuf = Some(ts) },
+                            None => tbuf = Some(ts),
+                        }
+                    }
                 }
             }
         }
 
-        let mut series = Self::new(tbuf.unwrap(), interval);
 
-        for tweet in tweets_csv.deserialize::<ProcessedTweetRecord>() {
-            if let Ok(tweet) = tweet.map(ProcessedTweetRecord::processed_tweet) {
-                series.insert_tweet(tweet);
+        let mut series = Self::new(tbuf.expect("No start date found!"), interval);
+        
+        for path in paths {
+            let mut tweets_csv = csv::ReaderBuilder::new()
+                .from_path(&path)?;
+            for tweet in tweets_csv.deserialize::<ProcessedTweetRecord>() {
+                if let Ok(tweet) = tweet.map(ProcessedTweetRecord::processed_tweet) {
+                    let tw_words = tweet.tweet.processed_words(&[]);
+                    let n = tw_words.iter().filter(|x| words.contains(x)).count() as u64;
+                    series.insert_tweet(WordOccurrence { time: tweet.timestamp(), n });
+                }
             }
         }
+
+
+        Ok(series)
+    }
+}
+
+impl TweetSeries<ProcessedTweet> {
+    pub fn from_processed_tweets_csv<P: AsRef<std::path::Path>>(paths: &[P], start: Option<DateTime<Utc>>, interval: chrono::Duration) -> csv::Result<Self> {
+        // Find the start
+
+        let mut tbuf: Option<DateTime<Utc>> = start;
+        if tbuf.is_none() {
+            for path in paths {
+                let mut tweets_csv = csv::ReaderBuilder::new()
+                    .from_path(&path)?;
+                for tweet in tweets_csv.deserialize::<ProcessedTweetRecord>() {
+                    if let Ok(tweet) = tweet.map(ProcessedTweetRecord::processed_tweet) {
+                        let ts = tweet.timestamp();
+                        match tbuf {
+                            Some(t) => if ts < t { tbuf = Some(ts) },
+                            None => tbuf = Some(ts),
+                        }
+                    }
+                }
+            }
+        }
+
+
+        let mut series = Self::new(tbuf.expect("No start date found!"), interval);
+        
+        for path in paths {
+            let mut tweets_csv = csv::ReaderBuilder::new()
+                .from_path(&path)?;
+            for tweet in tweets_csv.deserialize::<ProcessedTweetRecord>() {
+                if let Ok(tweet) = tweet.map(ProcessedTweetRecord::processed_tweet) {
+                    series.insert_tweet(tweet);
+                }
+            }
+        }
+
 
         Ok(series)
     }
@@ -206,75 +259,91 @@ impl<T: TimeSeriesItem> TweetSeries<T> {
         None
     }
 
-    pub fn series_days(&self) -> Vec<(f64, f64)> {
+    pub fn start_date(&self) -> DateTime<Utc> {
+        self.start
+    }
+
+    pub fn ave_series_days(&self) -> Vec<(f64, f64)> {
         self.data.iter().enumerate().map(|(i, x)| ((self.interval * i as i32).num_days() as f64, x.iter().map(TimeSeriesItem::value).sum::<f64>() / x.len() as f64)).collect()
     }
 
     // This only works if the interval is at least a day.
-    pub fn series_dt(&self) -> Vec<(DateTime<Utc>, f64)> {
+    pub fn ave_series_dt(&self) -> Vec<(DateTime<Utc>, f64)> {
         self.data.iter().enumerate().map(|(i, x)| (self.start + (self.interval * i as i32), x.iter().map(TimeSeriesItem::value).sum::<f64>() / x.len() as f64)).collect()
+    }
+
+    pub fn sum_series_days(&self) -> Vec<(f64, f64)> {
+        self.data.iter().enumerate().map(|(i, x)| ((self.interval * i as i32).num_days() as f64, x.iter().map(TimeSeriesItem::value).sum::<f64>())).collect()
+    }
+
+    // This only works if the interval is at least a day.
+    pub fn sum_series_dt(&self) -> Vec<(DateTime<Utc>, f64)> {
+        self.data.iter().enumerate().map(|(i, x)| (self.start + (self.interval * i as i32), x.iter().map(TimeSeriesItem::value).sum::<f64>())).collect()
     }
 
     pub fn end_date(&self) -> DateTime<Utc> {
         self.start + (self.interval * self.data.len() as i32)
     }
+}
 
-    pub fn linear_graph<P: AsRef<std::path::Path>>(&self, y_min: Option<f64>, y_max: Option<f64>, caption: impl AsRef<str>, y_desc: impl Into<String>, path: P) -> Result<(), Box<dyn Error>> {
-        let root = BitMapBackend::new(&path, (1024, 768)).into_drawing_area();
+pub fn linear_graph<P: AsRef<std::path::Path>>(data: Vec<(DateTime<Utc>, f64)>, start: DateTime<Utc>, end: DateTime<Utc>, y_min: Option<f64>, y_max: Option<f64>, date_fmt: &str, caption: impl AsRef<str>, y_desc: impl Into<String>, path: P) -> Result<(), Box<dyn Error>> {
+    let root = BitMapBackend::new(&path, (1024, 768)).into_drawing_area();
 
-        root.fill(&WHITE)?;
-    
-        let series = self.series_dt();
+    root.fill(&WHITE)?;
 
-        let mut min = series.iter().map(|(_, v)| *v).reduce(f64::min).unwrap();
-        let mut max = series.iter().map(|(_, v)| *v).reduce(f64::max).unwrap();
+    let series = data;
 
-        if let Some(v) = y_min {
-            min = v;
-        }
+    assert!(!series.is_empty());
 
-        if let Some(v) = y_max {
-            max = v;
-        }
+    let mut min = series.iter().map(|(_, v)| *v).reduce(f64::min).unwrap();
+    let mut max = series.iter().map(|(_, v)| *v).reduce(f64::max).unwrap();
 
-        let pad = (max - min) * 0.1;
-
-        let mut chart = ChartBuilder::on(&root)
-            .margin(10)
-            .caption(
-                caption,
-                ("sans-serif", 40),
-            )
-            .set_label_area_size(LabelAreaPosition::Left, 60)
-            .set_label_area_size(LabelAreaPosition::Right, 60)
-            .set_label_area_size(LabelAreaPosition::Bottom, 40)
-            .build_cartesian_2d(
-                self.start..self.end_date(),
-                min - pad..max + pad,
-            )?;
-
-        chart
-            .configure_mesh()
-            .disable_x_mesh()
-            .disable_y_mesh()
-            .x_labels(30)
-            .max_light_lines(4)
-            .y_desc(y_desc)
-            .draw()?;
-
-        chart.draw_series(LineSeries::new(
-            series.into_iter(),
-            &BLUE,
-        ))?;
-
-        // chart.draw_series(
-        //     DATA.iter()
-        //         .map(|(y, m, t)| Circle::new((Utc.ymd(*y, *m, 1), *t), 3, BLUE.filled())),
-        // )?;
-
-        // To avoid the IO failure being ignored silently, we manually call the present function
-        root.present()?;
-
-        Ok(())
+    if let Some(v) = y_min {
+        min = v;
     }
+
+    if let Some(v) = y_max {
+        max = v;
+    }
+
+    let pad = (max - min) * 0.1;
+
+    let mut chart = ChartBuilder::on(&root)
+        .margin(10)
+        .caption(
+            caption,
+            ("sans-serif", 40),
+        )
+        .set_label_area_size(LabelAreaPosition::Left, 60)
+        .set_label_area_size(LabelAreaPosition::Right, 60)
+        .set_label_area_size(LabelAreaPosition::Bottom, 40)
+        .build_cartesian_2d(
+            start..end,
+            min - pad..max + pad,
+        )?;
+
+    chart
+        .configure_mesh()
+        .disable_x_mesh()
+        .disable_y_mesh()
+        .x_labels(4)
+        .x_label_formatter(&|x| x.format(date_fmt).to_string())
+        .max_light_lines(4)
+        .y_desc(y_desc)
+        .draw()?;
+
+    chart.draw_series(LineSeries::new(
+        series.into_iter(),
+        &BLUE,
+    ))?;
+
+    // chart.draw_series(
+    //     DATA.iter()
+    //         .map(|(y, m, t)| Circle::new((Utc.ymd(*y, *m, 1), *t), 3, BLUE.filled())),
+    // )?;
+
+    // To avoid the IO failure being ignored silently, we manually call the present function
+    root.present()?;
+
+    Ok(())
 }
