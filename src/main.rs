@@ -1,4 +1,4 @@
-use chrono::{NaiveDate, NaiveDateTime};
+use chrono::{DateTime, NaiveDate, NaiveDateTime, Utc};
 use clap::Parser;
 use indicatif::{ProgressBar, ProgressState, ProgressStyle};
 use nitscrape::{
@@ -10,7 +10,11 @@ use sentiment::ProcessedTweetRecord;
 use serde::{Deserialize, Deserializer};
 use stats::DataSeries;
 use std::{
-    borrow::Cow, collections::HashMap, fs::{File, OpenOptions}, io::Write, path::PathBuf,
+    borrow::Cow,
+    collections::HashMap,
+    fs::{File, OpenOptions},
+    io::Write,
+    path::{PathBuf, Path},
     str::FromStr,
 };
 
@@ -19,10 +23,6 @@ use crate::{stats::TimeSeriesItem, tor_farm::ResumeMethod};
 pub mod sentiment;
 pub mod stats;
 pub mod tor_farm;
-
-pub const JUNK_CHARACTERS: [char; 20] = [
-    '(', ')', ',', '\"', '.', ';', ':', '\'', '-', '&', '!', '?', '—', ' ', '–', '|', '“', '”', '‘', '’'
-];
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct IndexEntry {
@@ -131,13 +131,13 @@ struct SentimentArgs {
 
 #[derive(Debug, Default, Parser)]
 struct PlotArgs {
-    #[clap(long, short = 'o', default_value="graph.png")]
+    #[clap(long, short = 'o', default_value = "graph.png")]
     output_path: String,
 
     #[clap(long, short = 'i', num_args = 1.., value_delimiter = ' ')]
     input_paths: Vec<String>,
 
-    #[clap(long, short = 'f', default_value="%Y-%m")]
+    #[clap(long, short = 'f', default_value = "%Y-%m")]
     date_format: String,
 
     #[clap(long, short = 't')]
@@ -149,13 +149,16 @@ struct PlotArgs {
     #[clap(long, short = 's')]
     start: Option<String>,
 
-    #[clap(long, short = 'd', default_value="4")]
+    #[clap(long, short = 'd', default_value = "4")]
     interval: i64,
+
+    #[clap(long, short = 'p')]
+    comparison_plot: Option<String>,
 }
 
 #[derive(Debug, Default, Parser)]
 struct WordPlotArgs {
-    #[clap(long, short = 'o', default_value="words_graph.png")]
+    #[clap(long, short = 'o', default_value = "words_graph.png")]
     output_path: String,
 
     #[clap(long, short = 'i', num_args = 1.., value_delimiter = ' ')]
@@ -163,11 +166,11 @@ struct WordPlotArgs {
 
     #[clap(long, short = 'w', num_args = 1.., value_delimiter = ' ')]
     words: Vec<String>,
-    
+
     #[clap(long, short = 'n')]
     normalise: bool,
 
-    #[clap(long, short = 'f', default_value="%Y-%m")]
+    #[clap(long, short = 'f', default_value = "%Y-%m")]
     date_format: String,
 
     #[clap(long, short = 't')]
@@ -179,8 +182,11 @@ struct WordPlotArgs {
     #[clap(long, short = 's')]
     start: Option<String>,
 
-    #[clap(long, short = 'd', default_value="4")]
+    #[clap(long, short = 'd', default_value = "4")]
     interval: i64,
+
+    #[clap(long, short = 'p')]
+    comparison_plot: Option<String>,
 }
 
 #[derive(Debug, Default, Parser)]
@@ -188,19 +194,19 @@ struct WordsArgs {
     #[clap(long, short = 'i', num_args = 1.., value_delimiter = ' ')]
     input_paths: Vec<String>,
 
-    #[clap(long, short = 'o', default_value="words.txt")]
+    #[clap(long, short = 'o', default_value = "words.txt")]
     output_path: String,
 
-    #[clap(long, short = 'x', default_value="ignore.csv")]
+    #[clap(long, short = 'x', default_value = "ignore.csv")]
     ignore_path: String,
 
-    #[clap(long, short = 'n', default_value="20")]
+    #[clap(long, short = 'n', default_value = "20")]
     num_words: i32,
 
     #[clap(long, short = 's')]
     start: Option<String>,
 
-    #[clap(long, short = 'v', default_value="4")]
+    #[clap(long, short = 'v', default_value = "4")]
     interval: i64,
 }
 
@@ -293,7 +299,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .open(&out_path)?;
 
             let mut output = csv::Writer::from_writer(output_file);
-        
+
             let model = tokio::task::spawn_blocking(|| {
                 sentiment::TWBSentimentAnalyser::general_sentiment_model().unwrap()
             })
@@ -344,7 +350,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
             Ok(())
-        },
+        }
         TsaCommand::Plot(args) => {
             let interval_days = args.interval;
             let graph = if let Some(start) = args.start {
@@ -374,9 +380,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .unwrap()
             };
 
-        
             let mut total = 0;
-        
+
             for (i, d) in graph.data.iter().enumerate() {
                 total += d.len();
                 println!(
@@ -386,11 +391,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     d.iter().map(TimeSeriesItem::value).sum::<f64>() / d.len() as f64
                 )
             }
-        
+
             println!("TOTAL: {}", total);
-        
+
+            let comparison_series: Option<Vec<(chrono::DateTime<chrono::Utc>, f64)>> = args
+                .comparison_plot
+                .map(|x| comparison_data(x).expect("Failed to fetch comparison data"));
+
             stats::linear_graph(
                 graph.ave_series_dt(),
+                comparison_series,
                 graph.start_date(),
                 graph.end_date(),
                 Some(-1.0),
@@ -403,7 +413,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .unwrap();
 
             Ok(())
-        },
+        }
         TsaCommand::PlotWords(args) => {
             let interval_days = args.interval;
             let graph = if let Some(start) = args.start {
@@ -434,9 +444,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 )
                 .unwrap()
             };
-        
+
+            let comparison_series: Option<Vec<(chrono::DateTime<chrono::Utc>, f64)>> = args
+                .comparison_plot
+             .map(|x| comparison_data(x).expect("Failed to fetch comparison data"));
+
+            for (i, occ) in graph.data.iter().enumerate() {
+                println!("[{}] {:.1}, {}", graph.date_for(i).format("%d/%m/%Y"), occ.iter().map(TimeSeriesItem::value).sum::<f64>(), occ.len());
+            }
+            
             stats::linear_graph(
-                if args.normalise { graph.ave_series_dt() } else { graph.sum_series_dt() },
+                if args.normalise {
+                    graph.ave_series_dt()
+                } else {
+                    graph.sum_series_dt()
+                },
+                comparison_series,
                 graph.start_date(),
                 graph.end_date(),
                 None,
@@ -449,7 +472,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .unwrap();
 
             Ok(())
-        },
+        }
         TsaCommand::Words(args) => {
             let interval_days = args.interval;
             let graph = if let Some(start) = args.start {
@@ -496,10 +519,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                 for ptweet in tweets.iter() {
                     for word in ptweet.tweet.text.split_ascii_whitespace() {
-                        let w = word.to_owned().to_lowercase().replace(
-                            &JUNK_CHARACTERS,
-                            "",
-                        );
+                        let w = word
+                            .to_owned()
+                            .to_lowercase()
+                            .replace(&nitscrape::twt::JUNK_CHARACTERS, "");
                         if !common_words.contains_key(&w) {
                             if let Some(counter) = tmap.get_mut(&w) {
                                 *counter += 1;
@@ -555,7 +578,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             let mut f = File::create(&args.output_path).unwrap();
 
-            for row in table {
+            for (i, row) in table.iter().enumerate() {
+                let _ = write!(f, "[{}] ", graph.date_for(i).format("%d/%m/%Y"));
                 for item in row {
                     let _ = write!(f, "{} ", item);
                 }
@@ -563,7 +587,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
 
             Ok(())
-        },
+        }
     }
 }
 
@@ -669,11 +693,13 @@ pub fn compile_us_election_tweets() {
 pub fn plot_graphs() {
     let graph = stats::TweetSeries::from_processed_tweets_csv(
         &["rep.csv"],
-        Some(NaiveDate::from_ymd_opt(2016, 7, 1)
-            .unwrap()
-            .and_hms_opt(12, 0, 0)
-            .unwrap()
-            .and_utc()),
+        Some(
+            NaiveDate::from_ymd_opt(2016, 7, 1)
+                .unwrap()
+                .and_hms_opt(12, 0, 0)
+                .unwrap()
+                .and_utc(),
+        ),
         chrono::Duration::days(4),
     )
     .unwrap();
@@ -694,6 +720,7 @@ pub fn plot_graphs() {
 
     stats::linear_graph(
         graph.ave_series_dt(),
+        None,
         graph.start_date(),
         graph.end_date(),
         Some(-1.0),
@@ -702,8 +729,8 @@ pub fn plot_graphs() {
         "Brexit Tweet Sentiment",
         "Net Positivity",
         "sent_brx.png",
-        )
-        .unwrap();
+    )
+    .unwrap();
 
     let common_words: HashMap<String, ()> = csv::ReaderBuilder::new()
         .from_path("common_words.csv")
@@ -722,12 +749,10 @@ pub fn plot_graphs() {
 
         for ptweet in tweets.iter() {
             for word in ptweet.tweet.text.split_ascii_whitespace() {
-                let w = word.to_owned().to_lowercase().replace(
-                    &[
-                        '(', ')', ',', '\"', '.', ';', ':', '\'', '-', '&', '!', '?', '—', ' ',
-                    ],
-                    "",
-                );
+                let w = word
+                    .to_owned()
+                    .to_lowercase()
+                    .replace(&nitscrape::twt::JUNK_CHARACTERS, "");
                 if !common_words.contains_key(&w) {
                     if let Some(counter) = tmap.get_mut(&w) {
                         *counter += 1;
@@ -845,4 +870,39 @@ fn default_output_path(base: &str, append: &str) -> Option<String> {
     buf.push(f);
 
     Some(buf.to_string_lossy().into())
+}
+
+pub fn comparison_data(path: impl AsRef<Path>) -> csv::Result<Vec<(DateTime<Utc>, f64)>> {
+    let mut csv = csv::ReaderBuilder::new().from_path(path)?;
+
+    let mut comparison_data: Vec<(chrono::DateTime<chrono::Utc>, f64)> = Vec::new();
+    for record in csv.records() {
+        // Record 1 is date:
+
+        if let Ok(record) = record {
+            let mut date: Option<chrono::DateTime<chrono::Utc>> = None;
+            if let Some(date_rcd) = record.get(0) {
+                match chrono::NaiveDate::parse_from_str(&date_rcd, "%d/%m/%Y") {
+                    Ok(x) => {
+                        let dt = chrono::DateTime::<chrono::Utc>::from_utc(
+                            x.and_hms_opt(12, 0, 0).unwrap(),
+                            chrono::Utc,
+                        );
+                        date = Some(dt);
+                    }
+                    Err(e) => {
+                        panic!("Failed to parse start date: {}", e);
+                    }
+                }
+            }
+
+            let value: Option<f64> = record.get(1).and_then(|x| x.parse::<f64>().ok());
+
+            if let (Some(date), Some(value)) = (date, value) {
+                comparison_data.push((date, value));
+            }
+        }
+    }
+
+    Ok(comparison_data)
 }

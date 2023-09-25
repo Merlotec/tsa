@@ -180,7 +180,7 @@ impl TweetSeries<WordOccurrence> {
                 if let Ok(tweet) = tweet.map(ProcessedTweetRecord::processed_tweet) {
                     let tw_words = tweet.tweet.processed_words(&[]);
                     let n = tw_words.iter().filter(|x| words.contains(x)).count() as u64;
-                    series.insert_tweet(WordOccurrence { time: tweet.timestamp(), n });
+                    series.insert(WordOccurrence { time: tweet.timestamp(), n });
                 }
             }
         }
@@ -219,7 +219,7 @@ impl TweetSeries<ProcessedTweet> {
                 .from_path(&path)?;
             for tweet in tweets_csv.deserialize::<ProcessedTweetRecord>() {
                 if let Ok(tweet) = tweet.map(ProcessedTweetRecord::processed_tweet) {
-                    series.insert_tweet(tweet);
+                    series.insert(tweet);
                 }
             }
         }
@@ -239,7 +239,7 @@ impl<T: TimeSeriesItem> TweetSeries<T> {
     }
 
     /// Spits the tweet back out of not inserted.
-    pub fn insert_tweet(&mut self, item: T) -> Option<T> {
+    pub fn insert(&mut self, item: T) -> Option<T> {
         let dur = item.timestamp().signed_duration_since(self.start);
         if dur.num_milliseconds() < 0 {
             return Some(item);
@@ -257,6 +257,10 @@ impl<T: TimeSeriesItem> TweetSeries<T> {
         }
 
         None
+    }
+
+    pub fn date_for(&self, i: usize) -> DateTime<Utc> {
+        self.start + (self.interval * i as i32)
     }
 
     pub fn start_date(&self) -> DateTime<Utc> {
@@ -286,7 +290,7 @@ impl<T: TimeSeriesItem> TweetSeries<T> {
     }
 }
 
-pub fn linear_graph<P: AsRef<std::path::Path>>(data: Vec<(DateTime<Utc>, f64)>, start: DateTime<Utc>, end: DateTime<Utc>, y_min: Option<f64>, y_max: Option<f64>, date_fmt: &str, caption: impl AsRef<str>, y_desc: impl Into<String>, path: P) -> Result<(), Box<dyn Error>> {
+pub fn linear_graph<P: AsRef<std::path::Path>>(data: Vec<(DateTime<Utc>, f64)>, comparison: Option<Vec<(DateTime<Utc>, f64)>>, start: DateTime<Utc>, end: DateTime<Utc>, y_min: Option<f64>, y_max: Option<f64>, date_fmt: &str, caption: impl AsRef<str>, y_desc: impl Into<String>, path: P) -> Result<(), Box<dyn Error>> {
     let root = BitMapBackend::new(&path, (1024, 768)).into_drawing_area();
 
     root.fill(&WHITE)?;
@@ -336,6 +340,14 @@ pub fn linear_graph<P: AsRef<std::path::Path>>(data: Vec<(DateTime<Utc>, f64)>, 
         series.into_iter(),
         &BLUE,
     ))?;
+
+    if let Some(comparison) = comparison {
+        chart.draw_series(LineSeries::new(
+            comparison.into_iter(),
+            &MAGENTA,
+        ))?;
+    
+    }
 
     // chart.draw_series(
     //     DATA.iter()
