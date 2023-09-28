@@ -1,6 +1,8 @@
 /target
 /*.csv
 /*.png
+/*.dta
+/*.txt
 /
 /tor
 /csv

@@ -5,17 +5,18 @@ use plotters::prelude::*;
 
 use crate::sentiment::{ProcessedTweet, ProcessedTweetRecord};
 
-pub struct WordOccurrence {
+#[derive(Debug, Copy, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct DataPoint {
     pub time: DateTime<Utc>,
-    pub n: u64,
+    pub val: f64,
 }
 
-impl TimeSeriesItem for WordOccurrence {
+impl TimeSeriesItem for DataPoint {
     fn timestamp(&self) -> DateTime<Utc> {
         self.time
     }
     fn value(&self) -> f64 {
-        self.n as f64
+        self.val
     }
 }
 
@@ -149,7 +150,7 @@ pub struct TweetSeries<T: TimeSeriesItem> {
     pub data: Vec<Vec<T>>,
 }
 
-impl TweetSeries<WordOccurrence> {
+impl TweetSeries<DataPoint> {
     pub fn from_processed_tweets_csv_with_words<P: AsRef<std::path::Path>>(paths: &[P], start: Option<DateTime<Utc>>, interval: chrono::Duration, words: &[String]) -> csv::Result<Self> {
         // Find the start
 
@@ -179,8 +180,49 @@ impl TweetSeries<WordOccurrence> {
             for tweet in tweets_csv.deserialize::<ProcessedTweetRecord>() {
                 if let Ok(tweet) = tweet.map(ProcessedTweetRecord::processed_tweet) {
                     let tw_words = tweet.tweet.processed_words(&[]);
-                    let n = tw_words.iter().filter(|x| words.contains(x)).count() as u64;
-                    series.insert(WordOccurrence { time: tweet.timestamp(), n });
+                    let n = tw_words.iter().filter(|x| words.contains(x)).count();
+                    series.insert(DataPoint { time: tweet.timestamp(), val: n as f64 });
+                }
+            }
+        }
+
+
+        Ok(series)
+    }
+
+    pub fn from_processed_tweets_csv_sentiment_with_words<P: AsRef<std::path::Path>>(paths: &[P], start: Option<DateTime<Utc>>, interval: chrono::Duration, words: &[String]) -> csv::Result<Self> {
+        // Find the start
+
+        let mut tbuf: Option<DateTime<Utc>> = start;
+        if tbuf.is_none() {
+            for path in paths {
+                let mut tweets_csv = csv::ReaderBuilder::new()
+                    .from_path(&path)?;
+                for tweet in tweets_csv.deserialize::<ProcessedTweetRecord>() {
+                    if let Ok(tweet) = tweet.map(ProcessedTweetRecord::processed_tweet) {
+                        let ts = tweet.timestamp();
+                        match tbuf {
+                            Some(t) => if ts < t { tbuf = Some(ts) },
+                            None => tbuf = Some(ts),
+                        }
+                    }
+                }
+            }
+        }
+
+
+        let mut series = Self::new(tbuf.expect("No start date found!"), interval);
+        
+        for path in paths {
+            let mut tweets_csv = csv::ReaderBuilder::new()
+                .from_path(&path)?;
+            for tweet in tweets_csv.deserialize::<ProcessedTweetRecord>() {
+                if let Ok(tweet) = tweet.map(ProcessedTweetRecord::processed_tweet) {
+                    let tw_words = tweet.tweet.processed_words(&[]);
+                    let n = tw_words.iter().filter(|x| words.contains(x)).count();
+                    if n > 0 {   
+                        series.insert(DataPoint { time: tweet.timestamp(), val: tweet.value() });
+                    }
                 }
             }
         }
@@ -288,6 +330,23 @@ impl<T: TimeSeriesItem> TweetSeries<T> {
     pub fn end_date(&self) -> DateTime<Utc> {
         self.start + (self.interval * self.data.len() as i32)
     }
+}
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct ExportRecord {
+    date: String,
+    val: f64,
+}
+
+pub fn export<'a>(data: impl Iterator<Item=(DateTime<Utc>, f64)>, path: impl AsRef<std::path::Path>, date_format: &str) -> csv::Result<()> {
+    let mut writer = csv::WriterBuilder::new().has_headers(true).from_path(path)?;
+    for (i, (time, val)) in data.into_iter().enumerate() {
+        if let Err(e) = writer.serialize(ExportRecord { date: time.format(date_format).to_string(), val }) {
+            println!("Failed to serialise data point {}: {}", i, e)
+        }
+    }
+
+    Ok(())
 }
 
 pub fn linear_graph<P: AsRef<std::path::Path>>(data: Vec<(DateTime<Utc>, f64)>, comparison: Option<Vec<(DateTime<Utc>, f64)>>, start: DateTime<Utc>, end: DateTime<Utc>, y_min: Option<f64>, y_max: Option<f64>, date_fmt: &str, caption: impl AsRef<str>, y_desc: impl Into<String>, path: P) -> Result<(), Box<dyn Error>> {

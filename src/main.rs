@@ -130,14 +130,14 @@ struct SentimentArgs {
 }
 
 #[derive(Debug, Default, Parser)]
-struct PlotArgs {
+struct PlotSentimentArgs {
     #[clap(long, short = 'o', default_value = "graph.png")]
     output_path: String,
 
     #[clap(long, short = 'i', num_args = 1.., value_delimiter = ' ')]
     input_paths: Vec<String>,
 
-    #[clap(long, short = 'f', default_value = "%Y-%m")]
+    #[clap(long, short = 'f', default_value = "%d-%m-%Y")]
     date_format: String,
 
     #[clap(long, short = 't')]
@@ -154,6 +154,9 @@ struct PlotArgs {
 
     #[clap(long, short = 'p')]
     comparison_plot: Option<String>,
+
+    #[clap(long, short = 'e')]
+    export_path: Option<String>,
 }
 
 #[derive(Debug, Default, Parser)]
@@ -170,7 +173,7 @@ struct WordPlotArgs {
     #[clap(long, short = 'n')]
     normalise: bool,
 
-    #[clap(long, short = 'f', default_value = "%Y-%m")]
+    #[clap(long, short = 'f', default_value = "%d-%m-%Y")]
     date_format: String,
 
     #[clap(long, short = 't')]
@@ -187,6 +190,42 @@ struct WordPlotArgs {
 
     #[clap(long, short = 'p')]
     comparison_plot: Option<String>,
+
+    #[clap(long, short = 'e')]
+    export_path: Option<String>,
+}
+
+#[derive(Debug, Default, Parser)]
+struct SentimentWordPlotArgs {
+    #[clap(long, short = 'o', default_value = "words_graph.png")]
+    output_path: String,
+
+    #[clap(long, short = 'i', num_args = 1.., value_delimiter = ' ')]
+    input_paths: Vec<String>,
+
+    #[clap(long, short = 'w', num_args = 1.., value_delimiter = ' ')]
+    words: Vec<String>,
+
+    #[clap(long, short = 'f', default_value = "%d-%m-%Y")]
+    date_format: String,
+
+    #[clap(long, short = 't')]
+    title: Option<String>,
+
+    #[clap(long, short = 'y')]
+    y_desc: Option<String>,
+
+    #[clap(long, short = 's')]
+    start: Option<String>,
+
+    #[clap(long, short = 'd', default_value = "4")]
+    interval: i64,
+
+    #[clap(long, short = 'p')]
+    comparison_plot: Option<String>,
+
+    #[clap(long, short = 'e')]
+    export_path: Option<String>,
 }
 
 #[derive(Debug, Default, Parser)]
@@ -215,8 +254,9 @@ struct WordsArgs {
 enum TsaCommand {
     Download(DownloadArgs),
     Sentiment(SentimentArgs),
-    Plot(PlotArgs),
+    PlotSentiment(PlotSentimentArgs),
     PlotWords(WordPlotArgs),
+    PlotWordSentiment(SentimentWordPlotArgs),
     Words(WordsArgs),
 }
 
@@ -351,10 +391,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             Ok(())
         }
-        TsaCommand::Plot(args) => {
+        TsaCommand::PlotSentiment(args) => {
             let interval_days = args.interval;
             let graph = if let Some(start) = args.start {
-                match chrono::NaiveDate::parse_from_str(&start, "%d/%m/%Y") {
+                match chrono::NaiveDate::parse_from_str(&start, "%d-%m-%Y") {
                     Ok(x) => {
                         let dt = chrono::DateTime::<chrono::Utc>::from_utc(
                             x.and_hms_opt(12, 0, 0).unwrap(),
@@ -380,26 +420,34 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .unwrap()
             };
 
-            let mut total = 0;
+            // let mut total = 0;
 
-            for (i, d) in graph.data.iter().enumerate() {
-                total += d.len();
-                println!(
-                    "{}: len {}, mean {}",
-                    i,
-                    d.len(),
-                    d.iter().map(TimeSeriesItem::value).sum::<f64>() / d.len() as f64
-                )
+            // for (i, d) in graph.data.iter().enumerate() {
+            //     total += d.len();
+            //     println!(
+            //         "{}: len {}, mean {}",
+            //         i,
+            //         d.len(),
+            //         d.iter().map(TimeSeriesItem::value).sum::<f64>() / d.len() as f64
+            //     )
+            // }
+
+            let series = graph.ave_series_dt();
+
+            if let Some(export_path) = args.export_path {
+                if let Err(e) = stats::export(series.iter().copied(), export_path, &args.date_format) {
+                    println!("Failed to export data: {}", e);
+                }
             }
 
-            println!("TOTAL: {}", total);
+            // println!("TOTAL: {}", total);
 
             let comparison_series: Option<Vec<(chrono::DateTime<chrono::Utc>, f64)>> = args
                 .comparison_plot
                 .map(|x| comparison_data(x).expect("Failed to fetch comparison data"));
 
             stats::linear_graph(
-                graph.ave_series_dt(),
+                series,
                 comparison_series,
                 graph.start_date(),
                 graph.end_date(),
@@ -417,7 +465,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         TsaCommand::PlotWords(args) => {
             let interval_days = args.interval;
             let graph = if let Some(start) = args.start {
-                match chrono::NaiveDate::parse_from_str(&start, "%d/%m/%Y") {
+                match chrono::NaiveDate::parse_from_str(&start, "%d-%m-%Y") {
                     Ok(x) => {
                         let dt = chrono::DateTime::<chrono::Utc>::from_utc(
                             x.and_hms_opt(12, 0, 0).unwrap(),
@@ -449,16 +497,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .comparison_plot
              .map(|x| comparison_data(x).expect("Failed to fetch comparison data"));
 
-            for (i, occ) in graph.data.iter().enumerate() {
-                println!("[{}] {:.1}, {}", graph.date_for(i).format("%d/%m/%Y"), occ.iter().map(TimeSeriesItem::value).sum::<f64>(), occ.len());
+
+            let series = if args.normalise {
+                graph.ave_series_dt()
+            } else {
+                graph.sum_series_dt()
+            };
+
+            if let Some(export_path) = args.export_path {
+                if let Err(e) = stats::export(series.iter().copied(), export_path, &args.date_format) {
+                    println!("Failed to export data: {}", e);
+                }
             }
-            
+
             stats::linear_graph(
-                if args.normalise {
-                    graph.ave_series_dt()
-                } else {
-                    graph.sum_series_dt()
-                },
+                series,
                 comparison_series,
                 graph.start_date(),
                 graph.end_date(),
@@ -473,10 +526,69 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             Ok(())
         }
+        TsaCommand::PlotWordSentiment(args) => {
+            let interval_days = args.interval;
+            let graph = if let Some(start) = args.start {
+                match chrono::NaiveDate::parse_from_str(&start, "%d-%m-%Y") {
+                    Ok(x) => {
+                        let dt = chrono::DateTime::<chrono::Utc>::from_utc(
+                            x.and_hms_opt(12, 0, 0).unwrap(),
+                            chrono::Utc,
+                        );
+                        stats::TweetSeries::from_processed_tweets_csv_sentiment_with_words(
+                            &args.input_paths,
+                            Some(dt),
+                            chrono::Duration::days(interval_days),
+                            &args.words,
+                        )
+                        .unwrap()
+                    }
+                    Err(e) => {
+                        panic!("Failed to parse start date: {}", e);
+                    }
+                }
+            } else {
+                stats::TweetSeries::from_processed_tweets_csv_sentiment_with_words(
+                    &args.input_paths,
+                    None,
+                    chrono::Duration::days(interval_days),
+                    &args.words,
+                )
+                .unwrap()
+            };
+
+            let comparison_series: Option<Vec<(chrono::DateTime<chrono::Utc>, f64)>> = args
+                .comparison_plot
+             .map(|x| comparison_data(x).expect("Failed to fetch comparison data"));
+
+             let series = graph.ave_series_dt();
+
+             if let Some(export_path) = args.export_path {
+                 if let Err(e) = stats::export(series.iter().copied(), export_path, &args.date_format) {
+                     println!("Failed to export data: {}", e);
+                 }
+             }
+
+            stats::linear_graph(
+                series,
+                comparison_series,
+                graph.start_date(),
+                graph.end_date(),
+                Some(-1.0),
+                Some(1.0),
+                &args.date_format,
+                args.title.unwrap_or_default(),
+                args.y_desc.unwrap_or_default(),
+                &args.output_path,
+            )
+            .unwrap();
+
+            Ok(())
+        }
         TsaCommand::Words(args) => {
             let interval_days = args.interval;
             let graph = if let Some(start) = args.start {
-                match chrono::NaiveDate::parse_from_str(&start, "%d/%m/%Y") {
+                match chrono::NaiveDate::parse_from_str(&start, "%d-%m-%Y") {
                     Ok(x) => {
                         let dt = chrono::DateTime::<chrono::Utc>::from_utc(
                             x.and_hms_opt(12, 0, 0).unwrap(),
@@ -579,7 +691,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let mut f = File::create(&args.output_path).unwrap();
 
             for (i, row) in table.iter().enumerate() {
-                let _ = write!(f, "[{}] ", graph.date_for(i).format("%d/%m/%Y"));
+                let _ = write!(f, "[{}] ", graph.date_for(i).format("%d-%m-%Y"));
                 for item in row {
                     let _ = write!(f, "{} ", item);
                 }
