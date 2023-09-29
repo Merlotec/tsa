@@ -233,7 +233,7 @@ struct WordsArgs {
     #[clap(long, short = 'i', num_args = 1.., value_delimiter = ' ')]
     input_paths: Vec<String>,
 
-    #[clap(long, short = 'o', default_value = "words.txt")]
+    #[clap(long, short = 'o', default_value = "words.csv")]
     output_path: String,
 
     #[clap(long, short = 'x', default_value = "ignore.csv")]
@@ -247,11 +247,24 @@ struct WordsArgs {
 
     #[clap(long, short = 'v', default_value = "4")]
     interval: i64,
+
+    #[clap(long, short = 'p')]
+    pretty: bool,
+}
+
+#[derive(Debug, Default, Parser)]
+pub struct CountArgs {
+    #[arg(global = true)]
+    path: String,
+
+    #[clap(long, short = 'h')]
+    has_headers: bool,
 }
 
 #[derive(Debug, Parser)]
 #[clap(name = "tsa", version, author = "Brodie Knight")]
 enum TsaCommand {
+    Count(CountArgs),
     Download(DownloadArgs),
     Sentiment(SentimentArgs),
     PlotSentiment(PlotSentimentArgs),
@@ -265,6 +278,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cmd: TsaCommand = TsaCommand::parse();
 
     match cmd {
+        TsaCommand::Count(args) => {
+            let mut csv = csv::ReaderBuilder::new().has_headers(args.has_headers).from_path(&args.path)?;
+            println!("{} has {} records (has_headers={})", args.path, csv.records().count(), args.has_headers);
+            Ok(())
+        }
         TsaCommand::Download(args) => {
             let settings_path = args.settings_path.unwrap_or("settings.json".to_owned());
 
@@ -624,7 +642,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             let mut table: Vec<Vec<String>> = Vec::new();
 
+            let mut max_count: usize = 0;
+
             for tweets in graph.data.iter() {
+                if tweets.len() > max_count {
+                    max_count = tweets.len();
+                }
+
                 let mut tmap = HashMap::<String, u32>::new();
 
                 let mut row: Vec<String> = Vec::new();
@@ -652,12 +676,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                 'l: for (i, (w, n)) in vec.into_iter().enumerate() {
                     if i < 30 {
-                        row.push(format!(
-                            "{} ({}, {:.2}%)",
-                            w,
-                            n,
-                            (n as f32 / tweets.len() as f32) * 100.0
-                        ));
+                        if args.pretty {
+                            row.push(format!(
+                                "{} ({} | {:.4})",
+                                w,
+                                n,
+                                (n as f32 / tweets.len() as f32)
+                            ));
+                        } else {
+                            row.push(format!(
+                                "{};{};{:.4}",
+                                w,
+                                n,
+                                (n as f32 / tweets.len() as f32)
+                            ));
+                        }
+                        
                     } else {
                         break 'l;
                     }
@@ -666,34 +700,50 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 table.push(row);
             }
 
-            let mut i: usize = 0;
-            loop {
-                let max_len = table
-                    .iter()
-                    .filter_map(|x: &Vec<String>| x.get(i))
-                    .map(|x| x.chars().count())
-                    .max();
-                if let Some(max_len) = max_len {
-                    for row in table.iter_mut() {
-                        if let Some(item) = row.get_mut(i) {
-                            let diff = max_len - item.chars().count();
-                            *item += ",";
-                            *item += &vec![' '; diff].into_iter().collect::<String>();
+            if args.pretty {
+                let mut i: usize = 0;
+                loop {
+                    let max_len = table
+                        .iter()
+                        .filter_map(|x: &Vec<String>| x.get(i))
+                        .map(|x| x.chars().count())
+                        .max();
+                    if let Some(max_len) = max_len {
+                        for row in table.iter_mut() {
+                            if let Some(item) = row.get_mut(i) {
+                                let diff = max_len - item.chars().count();
+                                *item += ",";
+                                *item += &vec![' '; diff].into_iter().collect::<String>();
+                            }
                         }
+    
+                        i += 1;
+                    } else {
+                        break;
                     }
-
-                    i += 1;
-                } else {
-                    break;
                 }
             }
+
+            let count_width = max_count.to_string().len();
 
             let mut f = File::create(&args.output_path).unwrap();
 
             for (i, row) in table.iter().enumerate() {
-                let _ = write!(f, "[{}] ", graph.date_for(i).format("%d-%m-%Y"));
+                let _ = write!(f, "{},", graph.date_for(i).format("%d-%m-%Y"));
+
+                if args.pretty {
+                    let _ = write!(f, "{:>width$}, ", graph.data[i].len(), width=count_width);
+                } else {
+                    let _ = write!(f, "{},", graph.data[i].len());
+                }
+
                 for item in row {
-                    let _ = write!(f, "{} ", item);
+                    if args.pretty {
+                        let _ = write!(f, "{} ", item);
+                    } else {
+                        let _ = write!(f, "{},", item);
+                    }
+                    
                 }
                 let _ = write!(f, "\n");
             }
@@ -883,7 +933,7 @@ pub fn plot_graphs() {
         'l: for (i, (w, n)) in vec.into_iter().enumerate() {
             if i < 30 {
                 row.push(format!(
-                    "{} ({}, {:.2}%)",
+                    "{} ({}; {:.2}%)",
                     w,
                     n,
                     (n as f32 / tweets.len() as f32) * 100.0
@@ -918,7 +968,7 @@ pub fn plot_graphs() {
         }
     }
 
-    let mut f = File::create("words.txt").unwrap();
+    let mut f = File::create("words.csv").unwrap();
 
     for row in table {
         for item in row {
@@ -994,7 +1044,7 @@ pub fn comparison_data(path: impl AsRef<Path>) -> csv::Result<Vec<(DateTime<Utc>
         if let Ok(record) = record {
             let mut date: Option<chrono::DateTime<chrono::Utc>> = None;
             if let Some(date_rcd) = record.get(0) {
-                match chrono::NaiveDate::parse_from_str(&date_rcd, "%d/%m/%Y") {
+                match chrono::NaiveDate::parse_from_str(&date_rcd, "%d-%m-%Y") {
                     Ok(x) => {
                         let dt = chrono::DateTime::<chrono::Utc>::from_utc(
                             x.and_hms_opt(12, 0, 0).unwrap(),
