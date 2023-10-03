@@ -349,9 +349,8 @@ pub fn export<'a>(data: impl Iterator<Item=(DateTime<Utc>, f64)>, path: impl AsR
     Ok(())
 }
 
-pub fn linear_graph<P: AsRef<std::path::Path>>(data: Vec<(DateTime<Utc>, f64)>, comparison: Option<Vec<(DateTime<Utc>, f64)>>, start: DateTime<Utc>, end: DateTime<Utc>, y_min: Option<f64>, y_max: Option<f64>, date_fmt: &str, caption: impl AsRef<str>, y_desc: impl Into<String>, path: P) -> Result<(), Box<dyn Error>> {
-    let root = BitMapBackend::new(&path, (1024, 768)).into_drawing_area();
-
+pub fn linear_graph<P: AsRef<std::path::Path>>(data: Vec<(DateTime<Utc>, f64)>, comparison: Option<Vec<(DateTime<Utc>, f64)>>, start: DateTime<Utc>, end: DateTime<Utc>, width: u32, height: u32, lsize: u32, stroke_width: u32, y_min: Option<f64>, y_max: Option<f64>, date_fmt: &str, caption: impl AsRef<str>, y_desc: impl Into<String>, path: P) -> Result<(), Box<dyn Error>> {
+    let root = BitMapBackend::new(&path, (width, height)).into_drawing_area();
     root.fill(&WHITE)?;
 
     let series = data;
@@ -372,7 +371,7 @@ pub fn linear_graph<P: AsRef<std::path::Path>>(data: Vec<(DateTime<Utc>, f64)>, 
     let pad = (max - min) * 0.1;
 
     let mut chart = ChartBuilder::on(&root)
-        .margin(10)
+        .margin(6 + lsize / 2)
         .caption(
             caption,
             ("sans-serif", 40),
@@ -387,8 +386,11 @@ pub fn linear_graph<P: AsRef<std::path::Path>>(data: Vec<(DateTime<Utc>, f64)>, 
 
     chart
         .configure_mesh()
+        .x_label_style(("sans-serif", lsize))
+        .y_label_style(("sans-serif", lsize))
         .disable_x_mesh()
         .disable_y_mesh()
+        .axis_style(ShapeStyle { color: BLACK.into(), filled: true, stroke_width: u32::max(stroke_width - 1, 1) },)
         .x_labels(4)
         .x_label_formatter(&|x| x.format(date_fmt).to_string())
         .max_light_lines(4)
@@ -397,13 +399,13 @@ pub fn linear_graph<P: AsRef<std::path::Path>>(data: Vec<(DateTime<Utc>, f64)>, 
 
     chart.draw_series(LineSeries::new(
         series.into_iter(),
-        &BLUE,
+        ShapeStyle { color: BLUE.into(), filled: true, stroke_width },
     ))?;
 
     if let Some(comparison) = comparison {
         chart.draw_series(LineSeries::new(
             comparison.into_iter(),
-            &MAGENTA,
+            ShapeStyle { color: MAGENTA.into(), filled: true, stroke_width },
         ))?;
     
     }

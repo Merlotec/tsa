@@ -3,6 +3,8 @@
 /*.png
 /*.dta
 /*.txt
+/*.pdf
+/*.xlsx
 /
 /tor
 /csv
@@ -15,3 +17,5 @@
 /tsa.exe
 /tsa
 !ignore.csv
+!words.csv
+!words_raw.csv
