@@ -284,6 +284,9 @@ struct WordsArgs {
 
     #[clap(long, short = 'p')]
     pretty: bool,
+
+    #[clap(long, short = 'h')]
+    headers: bool,
 }
 
 #[derive(Debug, Default, Parser)]
@@ -773,6 +776,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let count_width = max_count.to_string().len();
 
             let mut f = File::create(&args.output_path).unwrap();
+
+            if args.headers {
+                let _ = write!(f, "date,");
+                let _ = write!(f, "tweet_count,");
+                for i in 1..(args.num_words + 1) {
+                    let _ = write!(f, "word_{},", i);
+                }
+                let _ = write!(f, "\n");
+            }
 
             for (i, row) in table.iter().enumerate() {
                 let _ = write!(f, "{},", graph.date_for(i).format("%d-%m-%Y"));
