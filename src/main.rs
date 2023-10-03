@@ -273,7 +273,7 @@ struct WordsArgs {
     #[clap(long, short = 'x', default_value = "ignore.csv")]
     ignore_path: String,
 
-    #[clap(long, short = 'n', default_value = "20")]
+    #[clap(long, short = 'n', default_value = "30")]
     num_words: i32,
 
     #[clap(long, short = 's')]
@@ -724,7 +724,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 vec.sort_by_key(|x| -(x.1 as i32));
 
                 'l: for (i, (w, n)) in vec.into_iter().enumerate() {
-                    if i < 30 {
+                    if i < args.num_words as usize {
                         if args.pretty {
                             row.push(format!(
                                 "{} ({} | {:.4})",
